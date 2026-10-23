@@ -98,7 +98,7 @@ with col_controls:
     start_date = st.date_input("Data di Inizio", value=datetime.today().date() - timedelta(days=7))
     end_date = st.date_input("Data di Fine", value=datetime.today().date())
     
-    st.header("2. Seleziona Sensori")
+st.header("2. Seleziona Sensori")
     selected_sensors_per_station = {}
     
     if not st.session_state.selected_stations:
@@ -106,18 +106,54 @@ with col_controls:
     
     for st_name in st.session_state.selected_stations:
         st_info = stations_dict[st_name]
-        sensors_list = st_info.get("sensors", [])
         
-        sensor_options = {
-            f"{s.get('type', 'Sensore')} ({s.get('id')})": s.get("id") 
-            for s in sensors_list if isinstance(s, dict)
-        }
+        # 1. Tentativo: cerca i sensori nelle chiavi più comuni
+        sensors_list = st_info.get("sensors") or st_info.get("sensor") or st_info.get("equipments") or st_info.get("metrics") or []
         
-        if not sensor_options:
-            st.warning(f"{st_name}: Nessun sensore.")
+        # 2. Tentativo: se la lista è vuota, proviamo a interrogare l'endpoint specifico dei sensori per questa stazione
+        if not sensors_list:
+            station_id = st_info.get("id") or st_info.get("stationId") or st_info.get("code")
+            if station_id:
+                try:
+                    res = requests.get(f"{BASE_URL}/stations/{station_id}/sensors")
+                    if res.status_code == 200:
+                        s_data = res.json()
+                        if isinstance(s_data, list):
+                            sensors_list = s_data
+                        elif isinstance(s_data, dict):
+                            for k in ['data', 'items', 'sensors']:
+                                if k in s_data and isinstance(s_data[k], list):
+                                    sensors_list = s_data[k]
+                except:
+                    pass
+        
+        # 3. Se ancora non troviamo nulla, mostriamo l'oggetto grezzo per fare debug!
+        if not sensors_list:
+            st.warning(f"{st_name}: Impossibile trovare la lista dei sensori in automatico.")
+            with st.expander(f"🔍 DEBUG: Mostra i dati grezzi di '{st_name}' per capire la struttura"):
+                st.write("L'API restituisce questi dati. Se vedi sotto quale nome si nascondono i sensori, fammelo sapere!")
+                st.json(st_info)
             continue
             
-        chosen = st.multiselect(f"Sensori: {st_name}", options=list(sensor_options.keys()))
+        # Estraiamo dinamicamente il nome e l'ID del sensore (coprendo varie nomenclature API)
+        sensor_options = {}
+        for s in sensors_list:
+            if isinstance(s, dict):
+                # Cerchiamo il nome del sensore
+                s_name_display = s.get("type") or s.get("name") or s.get("description") or s.get("sensorType") or "Sensore Ignoto"
+                # Cerchiamo l'ID
+                s_id = s.get("id") or s.get("sensorId") or s.get("code")
+                
+                if s_id:
+                    sensor_options[f"{s_name_display} (ID: {s_id})"] = s_id
+        
+        if not sensor_options:
+            st.warning(f"{st_name}: Trovati sensori ma privi di un ID valido per il download.")
+            with st.expander(f"🔍 DEBUG: Mostra i sensori grezzi di '{st_name}'"):
+                st.json(sensors_list)
+            continue
+            
+        chosen = st.multiselect(f"Sensori disponibili per {st_name}:", options=list(sensor_options.keys()))
         if chosen:
             selected_sensors_per_station[st_name] = [sensor_options[c] for c in chosen]
 
