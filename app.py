@@ -98,7 +98,7 @@ with col_controls:
     start_date = st.date_input("Data di Inizio", value=datetime.today().date() - timedelta(days=7))
     end_date = st.date_input("Data di Fine", value=datetime.today().date())
     
-st.header("2. Seleziona Sensori")
+    st.header("2. Seleziona Sensori")
     selected_sensors_per_station = {}
     
     if not st.session_state.selected_stations:
@@ -135,13 +135,11 @@ st.header("2. Seleziona Sensori")
                 st.json(st_info)
             continue
             
-        # Estraiamo dinamicamente il nome e l'ID del sensore (coprendo varie nomenclature API)
+        # Estraiamo dinamicamente il nome e l'ID del sensore
         sensor_options = {}
         for s in sensors_list:
             if isinstance(s, dict):
-                # Cerchiamo il nome del sensore
                 s_name_display = s.get("type") or s.get("name") or s.get("description") or s.get("sensorType") or "Sensore Ignoto"
-                # Cerchiamo l'ID
                 s_id = s.get("id") or s.get("sensorId") or s.get("code")
                 
                 if s_id:
