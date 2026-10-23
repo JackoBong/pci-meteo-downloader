@@ -8,30 +8,28 @@ from streamlit_folium import st_folium
 st.set_page_config(page_title="Download Dati Meteo FVG", layout="wide")
 BASE_URL = "https://monitor.protezionecivile.fvg.it/api"
 
-# --- GESTIONE DATI API ---
+# --- GESTIONE API TRAMITE I MODELLI ESATTI ---
 
 @st.cache_data(ttl=3600)
 def fetch_stations():
-    """Scarica le stazioni e le organizza in un dizionario"""
+    """Scarica le stazioni (Modello Station)"""
     try:
         res = requests.get(f"{BASE_URL}/stations")
         if res.status_code == 200:
             data = res.json()
             stations_list = data if isinstance(data, list) else data.get('data', [])
-            
-            # Creiamo il dizionario filtrando solo le stazioni valide
             return {
                 s.get("name"): s 
                 for s in stations_list 
                 if isinstance(s, dict) and s.get("name") and s.get("id")
             }
     except Exception as e:
-        st.error(f"Errore connessione API Stazioni: {e}")
+        st.error(f"Errore API Stazioni: {e}")
     return {}
 
 @st.cache_data(ttl=3600)
 def fetch_sensors(station_id):
-    """Scarica i sensori di una specifica stazione in base al suo ID"""
+    """Scarica i sensori (Modello Sensor) per una specifica stazione"""
     try:
         res = requests.get(f"{BASE_URL}/stations/{station_id}/sensors")
         if res.status_code == 200:
@@ -47,7 +45,7 @@ def fetch_sensors(station_id):
     return []
 
 def fetch_data_in_chunks(sensor_id, start_date, end_date):
-    """Scarica le misure usando le chiavi snake_case dei Modelli Ufficiali"""
+    """Scarica le misure (Modello Measure) aggirando i limiti temporali"""
     all_data = []
     current_start = start_date
     while current_start <= end_date:
@@ -56,13 +54,13 @@ def fetch_data_in_chunks(sensor_id, start_date, end_date):
         str_start = current_start.strftime("%Y-%m-%dT00:00:00")
         str_end = current_end.strftime("%Y-%m-%dT23:59:59")
         
-        # Usiamo i nomi snake_case in base ai modelli (passiamo sia start/end che date_from/to per massima compatibilità)
+        # Filtri basati sulla nomenclatura standard REST (spesso start/end o start_date/end_date)
         params = {
             "sensor_id": sensor_id,
             "start": str_start,
             "end": str_end,
-            "date_from": str_start,
-            "date_to": str_end
+            "start_date": str_start,
+            "end_date": str_end
         }
         
         try:
@@ -70,7 +68,6 @@ def fetch_data_in_chunks(sensor_id, start_date, end_date):
             if res.status_code == 200:
                 data = res.json()
                 
-                # Estraiamo la lista delle misure
                 measures_list = []
                 if isinstance(data, list):
                     measures_list = data
@@ -80,7 +77,7 @@ def fetch_data_in_chunks(sensor_id, start_date, end_date):
                             measures_list = data[key]
                             break
                             
-                # Estraiamo solo data (dt) e valore (value) come da modello Measure
+                # Estrazione rigorosa dal Modello Measure: dt e value
                 for m in measures_list:
                     if "dt" in m and "value" in m:
                         all_data.append({
@@ -102,7 +99,7 @@ if "processed_tooltip" not in st.session_state:
 
 stations_dict = fetch_stations()
 
-# Gestione Clic sulla Mappa invisibile
+# Gestione sincrona della mappa invisibile
 map_state = st.session_state.get("fvg_map")
 if map_state and map_state.get("last_object_clicked_tooltip"):
     current_click = map_state["last_object_clicked_tooltip"]
@@ -143,23 +140,22 @@ with col_controls:
         st_info = stations_dict[st_name]
         station_id = st_info.get("id")
         
-        # Recuperiamo i sensori con la chiamata specifica che sappiamo funzionare
-        sensors_list = st_info.get("sensors") or fetch_sensors(station_id)
+        sensors_list = fetch_sensors(station_id)
         
         if not sensors_list:
             st.warning(f"{st_name}: Nessun sensore trovato.")
             continue
             
-        # Formattiamo le opzioni usando quantity e unit come da modello SensorWithStatus
+        # Nomi e unità basati sul Modello Sensor (quantity, unit, id)
         sensor_options = {}
         for s in sensors_list:
             if isinstance(s, dict):
-                s_quantity = s.get("quantity") or s.get("type") or s.get("name") or "Sensore"
+                s_quantity = s.get("quantity") or s.get("name") or "Sensore"
                 s_unit = s.get("unit", "")
                 s_id = s.get("id")
                 
                 if s_id:
-                    label = f"{s_quantity} {f'({s_unit})' if s_unit else ''} - ID: {s_id}"
+                    label = f"{s_quantity} {f'[{s_unit}]' if s_unit else ''} - (ID: {s_id})"
                     sensor_options[label] = s_id
         
         chosen = st.multiselect(f"Sensori per {st_name}:", options=list(sensor_options.keys()))
@@ -196,7 +192,7 @@ with col_controls:
             progress_text.text("Completato!")
             
             if not final_dataframe.empty:
-                st.success(f"Scaricati {len(final_dataframe)} record effettivi.")
+                st.success(f"Scaricati {len(final_dataframe)} record.")
                 st.dataframe(final_dataframe.head())
                 csv = final_dataframe.to_csv(index=False).encode('utf-8')
                 st.download_button(
@@ -207,13 +203,14 @@ with col_controls:
                     use_container_width=True
                 )
             else:
-                st.warning("Nessun dato temporale trovato per i sensori scelti.")
+                st.warning("Nessun dato temporale trovato per i sensori scelti. (Le misurazioni storiche potrebbero richiedere un URL dedicato, es: /sensors/{id}/measures)")
 
 with col_map:
+    # Centratura basata sul modello Station (lat, lon)
     m = folium.Map(location=[46.06, 13.23], zoom_start=9)
     for s_name, s_data in stations_dict.items():
-        lat = s_data.get("lat") or s_data.get("latitude")
-        lon = s_data.get("lon") or s_data.get("longitude")
+        lat = s_data.get("lat")
+        lon = s_data.get("lon")
         
         if lat and lon:
             color = "red" if s_name in st.session_state.selected_stations else "blue"
