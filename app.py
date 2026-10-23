@@ -8,11 +8,11 @@ from streamlit_folium import st_folium
 st.set_page_config(page_title="Download Dati Meteo FVG", layout="wide")
 BASE_URL = "https://monitor.protezionecivile.fvg.it/api"
 
-# --- GESTIONE API TRAMITE I MODELLI ESATTI ---
+# --- GESTIONE API DA SWAGGER PCI FVG ---
 
 @st.cache_data(ttl=3600)
 def fetch_stations():
-    """Scarica le stazioni (Modello Station)"""
+    """Scarica le stazioni dall'endpoint GET /stations"""
     try:
         res = requests.get(f"{BASE_URL}/stations")
         if res.status_code == 200:
@@ -24,12 +24,12 @@ def fetch_stations():
                 if isinstance(s, dict) and s.get("name") and s.get("id")
             }
     except Exception as e:
-        st.error(f"Errore API Stazioni: {e}")
+        st.error(f"Errore connessione API Stazioni: {e}")
     return {}
 
 @st.cache_data(ttl=3600)
 def fetch_sensors(station_id):
-    """Scarica i sensori (Modello Sensor) per una specifica stazione"""
+    """Scarica i sensori dall'endpoint GET /stations/{stationId}/sensors"""
     try:
         res = requests.get(f"{BASE_URL}/stations/{station_id}/sensors")
         if res.status_code == 200:
@@ -44,30 +44,43 @@ def fetch_sensors(station_id):
         pass
     return []
 
-def fetch_data_in_chunks(sensor_id, start_date, end_date):
-    """Scarica le misure (Modello Measure) aggirando i limiti temporali"""
+def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
+    """
+    Scarica le misure storiche usando l'endpoint specifico da Swagger:
+    GET /stations/{stationId}/sensors/{sensorId}/measures
+    """
     all_data = []
     current_start = start_date
+    
     while current_start <= end_date:
         current_end = min(current_start + timedelta(days=6), end_date)
         
-        str_start = current_start.strftime("%Y-%m-%dT00:00:00")
-        str_end = current_end.strftime("%Y-%m-%dT23:59:59")
+        str_start = current_start.strftime("%Y-%m-%dT00:00:00Z")
+        str_end = current_end.strftime("%Y-%m-%dT23:59:59Z")
         
-        # Filtri basati sulla nomenclatura standard REST (spesso start/end o start_date/end_date)
+        # Invochiamo i filtri sulla chiave temporale 'dt'
         params = {
-            "sensor_id": sensor_id,
+            "dt_from": str_start,
+            "dt_to": str_end,
+            "from": str_start,
+            "to": str_end,
             "start": str_start,
-            "end": str_end,
-            "start_date": str_start,
-            "end_date": str_end
+            "end": str_end
         }
         
+        # Endpoint esatto documentato in Swagger
+        url = f"{BASE_URL}/stations/{station_id}/sensors/{sensor_id}/measures"
+        
         try:
-            res = requests.get(f"{BASE_URL}/measures", params=params)
+            res = requests.get(url, params=params)
+            
+            # Fallback sull'endpoint diretto del sensore se necessario
+            if res.status_code != 200:
+                url_alt = f"{BASE_URL}/sensors/{sensor_id}/measures"
+                res = requests.get(url_alt, params=params)
+                
             if res.status_code == 200:
                 data = res.json()
-                
                 measures_list = []
                 if isinstance(data, list):
                     measures_list = data
@@ -77,9 +90,8 @@ def fetch_data_in_chunks(sensor_id, start_date, end_date):
                             measures_list = data[key]
                             break
                             
-                # Estrazione rigorosa dal Modello Measure: dt e value
                 for m in measures_list:
-                    if "dt" in m and "value" in m:
+                    if isinstance(m, dict) and "dt" in m and "value" in m:
                         all_data.append({
                             "data_ora": m["dt"],
                             "valore": m["value"]
@@ -99,7 +111,7 @@ if "processed_tooltip" not in st.session_state:
 
 stations_dict = fetch_stations()
 
-# Gestione sincrona della mappa invisibile
+# Gestione Clic sulla Mappa
 map_state = st.session_state.get("fvg_map")
 if map_state and map_state.get("last_object_clicked_tooltip"):
     current_click = map_state["last_object_clicked_tooltip"]
@@ -146,7 +158,6 @@ with col_controls:
             st.warning(f"{st_name}: Nessun sensore trovato.")
             continue
             
-        # Nomi e unità basati sul Modello Sensor (quantity, unit, id)
         sensor_options = {}
         for s in sensors_list:
             if isinstance(s, dict):
@@ -160,7 +171,10 @@ with col_controls:
         
         chosen = st.multiselect(f"Sensori per {st_name}:", options=list(sensor_options.keys()))
         if chosen:
-            selected_sensors_per_station[st_name] = [sensor_options[c] for c in chosen]
+            selected_sensors_per_station[st_name] = {
+                "station_id": station_id,
+                "sensor_ids": [sensor_options[c] for c in chosen]
+            }
 
     if st.button("Scarica dati selezionati", type="primary", use_container_width=True):
         if not selected_sensors_per_station:
@@ -172,14 +186,15 @@ with col_controls:
             progress_text = st.empty()
             progress_bar = st.progress(0)
             
-            total_sensors = sum(len(v) for v in selected_sensors_per_station.values())
+            total_sensors = sum(len(v["sensor_ids"]) for v in selected_sensors_per_station.values())
             processed = 0
             
-            for st_name, sensor_ids in selected_sensors_per_station.items():
-                for s_id in sensor_ids:
+            for st_name, info in selected_sensors_per_station.items():
+                st_id = info["station_id"]
+                for s_id in info["sensor_ids"]:
                     progress_text.text(f"Scaricamento: {st_name} (Sensore {s_id})...")
                     
-                    raw_data = fetch_data_in_chunks(s_id, start_date, end_date)
+                    raw_data = fetch_data_in_chunks(st_id, s_id, start_date, end_date)
                     if raw_data:
                         temp_df = pd.DataFrame(raw_data)
                         temp_df.insert(0, "stazione", st_name)
@@ -203,10 +218,9 @@ with col_controls:
                     use_container_width=True
                 )
             else:
-                st.warning("Nessun dato temporale trovato per i sensori scelti. (Le misurazioni storiche potrebbero richiedere un URL dedicato, es: /sensors/{id}/measures)")
+                st.warning("Nessun dato trovato per il periodo e i sensori scelti.")
 
 with col_map:
-    # Centratura basata sul modello Station (lat, lon)
     m = folium.Map(location=[46.06, 13.23], zoom_start=9)
     for s_name, s_data in stations_dict.items():
         lat = s_data.get("lat")
