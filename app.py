@@ -39,11 +39,24 @@ def fetch_data_in_chunks(sensor_id, start_date, end_date):
         params = {"sensorId": sensor_id, "dateFrom": str_start, "dateTo": str_end}
         try:
             res = requests.get(f"{BASE_URL}/measures", params=params)
-            if res.status_code == 200 and res.json():
-                all_data.extend(res.json())
+            if res.status_code == 200:
+                data = res.json()
+                
+                # --- MODIFICA CHIAVE QUI ---
+                # Estraiamo la lista reale dei dati a prescindere da come la incapsula l'API
+                if isinstance(data, list):
+                    all_data.extend(data)
+                elif isinstance(data, dict):
+                    # Cerca l'array dei dati nelle chiavi più usate (in base al tuo CSV la chiave è 'measures')
+                    for key in ['measures', 'data', 'items', 'values']:
+                        if key in data and isinstance(data[key], list):
+                            all_data.extend(data[key])
+                            break
         except Exception:
             pass
+            
         current_start = current_end + timedelta(days=1)
+        
     return all_data
 
 # --- INIZIALIZZAZIONE STATO ---
