@@ -36,7 +36,7 @@ def fetch_data_in_chunks(sensor_id, start_date, end_date):
         str_start = current_start.strftime("%Y-%m-%dT00:00:00")
         str_end = current_end.strftime("%Y-%m-%dT23:59:59")
         
-        params = {"sensorId": sensor_id, "from": str_start, "to": str_end}
+        params = {"id": sensor_id, "from": str_start, "to": str_end}
         try:
             res = requests.get(f"{BASE_URL}/measures", params=params)
             if res.status_code == 200:
