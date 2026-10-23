@@ -14,37 +14,41 @@ BASE_URL = "https://monitor.protezionecivile.fvg.it/api"
 def fetch_stations():
     """Scarica e memorizza in cache l'anagrafica delle stazioni e dei sensori"""
     try:
-        response = requests.get(f"{BASE_URL}/stations") # Verifica endpoint esatto
+        response = requests.get(f"{BASE_URL}/stations")
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            
+            # 1. Se l'API restituisce direttamente una lista
+            if isinstance(data, list):
+                return data
+                
+            # 2. Se l'API restituisce un dizionario (es. {"data": [...]})
+            if isinstance(data, dict):
+                # Cerchiamo la chiave che contiene la lista delle stazioni
+                for probabile_chiave in ['data', 'items', 'stations', 'features']:
+                    if probabile_chiave in data and isinstance(data[probabile_chiave], list):
+                        return data[probabile_chiave]
+                
+                # Se non trova la lista, mostra le chiavi per permetterti di fare debug
+                st.error(f"Struttura JSON imprevista. L'API ha restituito le chiavi: {list(data.keys())}")
+                return []
+                
     except Exception as e:
         st.error(f"Errore connessione API: {e}")
     return []
 
-def fetch_data_in_chunks(sensor_id, start_date, end_date):
-    """Scarica i dati aggirando il limite settimanale"""
-    all_data = []
-    current_start = start_date
-    total_days = (end_date - start_date).days + 1
-    
-    while current_start <= end_date:
-        current_end = min(current_start + timedelta(days=6), end_date)
-        
-        str_start = current_start.strftime("%Y-%m-%dT00:00:00")
-        str_end = current_end.strftime("%Y-%m-%dT23:59:59")
-        
-        params = {"sensorId": sensor_id, "dateFrom": str_start, "dateTo": str_end}
-        
-        try:
-            res = requests.get(f"{BASE_URL}/measures", params=params)
-            if res.status_code == 200 and res.json():
-                all_data.extend(res.json())
-        except Exception:
-            pass
-            
-        current_start = current_end + timedelta(days=1)
-        
-    return all_data
+# Inizializzazione stato
+if "selected_stations" not in st.session_state:
+    st.session_state.selected_stations = []
+
+stations_data = fetch_stations()
+
+# Creiamo il dizionario aggiungendo il controllo isinstance(s, dict) per totale sicurezza
+stations_dict = {
+    s.get("name"): s 
+    for s in stations_data 
+    if isinstance(s, dict) and s.get("name")
+}
 
 # --- INIZIALIZZAZIONE STATO ---
 if "selected_stations" not in st.session_state:
