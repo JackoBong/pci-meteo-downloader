@@ -9,41 +9,62 @@ st.set_page_config(page_title="Download Dati Meteo FVG", layout="wide")
 
 BASE_URL = "https://monitor.protezionecivile.fvg.it/api"
 
-# Header HTTP per evitare blocchi 403 Forbidden dai firewall WAF del server
+# Header HTTP per evitare blocchi
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json"
 }
 
-# --- GESTIONE DATI API CON CACHE SICURA ---
+# --- GESTIONE DATI API (ULTRA-RESILIENTE) ---
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_stations():
-    """Scarica le stazioni. Se fallisce, solleva un'eccezione senza salvare la cache vuota."""
+    """Scarica le stazioni cercando dinamicamente l'array nel JSON."""
     try:
         res = requests.get(f"{BASE_URL}/stations", headers=HEADERS, timeout=10)
         if res.status_code == 200:
             data = res.json()
-            stations_list = data if isinstance(data, list) else data.get('data', [])
             
+            stations_list = []
+            # 1. Se è direttamente una lista
+            if isinstance(data, list):
+                stations_list = data
+            # 2. Se è un dizionario, cerchiamo l'array ovunque
+            elif isinstance(data, dict):
+                for k in ['data', 'items', 'stations', 'features', 'result', 'records']:
+                    if k in data and isinstance(data[k], list):
+                        stations_list = data[k]
+                        break
+                # Se ancora non l'abbiamo trovato, prendiamo la prima lista che troviamo
+                if not stations_list:
+                    for val in data.values():
+                        if isinstance(val, list):
+                            stations_list = val
+                            break
+                            
+            if not stations_list:
+                # Stampiamo i primi 200 caratteri del JSON per capire l'errore
+                raise ValueError(f"Formato JSON imprevisto. Dati ricevuti: {str(data)[:200]}")
+                
+            # Creiamo il dizionario filtrando le stazioni valide
             result = {
                 s.get("name"): s 
                 for s in stations_list 
-                if isinstance(s, dict) and s.get("name") and s.get("id")
+                if isinstance(s, dict) and s.get("name") and "id" in s
             }
+            
             if result:
                 return result
             else:
-                raise ValueError("Nessuna stazione trovata nella risposta JSON dell'API.")
+                raise ValueError("Trovata la lista, ma alle stazioni mancano i campi 'name' o 'id'.")
         else:
-            raise ValueError(f"HTTP Error {res.status_code}: {res.text}")
+            raise ValueError(f"Errore HTTP {res.status_code}: {res.text}")
     except Exception as e:
-        # Rilanciamo l'eccezione in modo che Streamlit NON salvi l'errore in cache
-        raise RuntimeError(f"Impossibile scaricare l'elenco stazioni: {e}")
+        raise RuntimeError(f"{e}")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_sensors(station_id):
-    """Scarica i sensori associati a una specifica stazione."""
+    """Scarica i sensori con la stessa logica di ricerca intelligente."""
     try:
         res = requests.get(f"{BASE_URL}/stations/{station_id}/sensors", headers=HEADERS, timeout=10)
         if res.status_code == 200:
@@ -54,43 +75,38 @@ def fetch_sensors(station_id):
                 for k in ['data', 'items', 'sensors']:
                     if k in data and isinstance(data[k], list):
                         return data[k]
+                for val in data.values():
+                    if isinstance(val, list):
+                        return val
     except Exception:
         pass
     return []
 
 def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
-    """Scarica le misurazioni storiche ciclando per blocchi di 7 giorni."""
+    """Scarica le misure storiche ciclando sulle API."""
     all_data = []
     current_start = start_date
     
     while current_start <= end_date:
         current_end = min(current_start + timedelta(days=6), end_date)
         
-        # Formato data ISO 8601 UTC richiesto dal campo 'dt' del modello Measure
         str_start = current_start.strftime("%Y-%m-%dT00:00:00Z")
         str_end = current_end.strftime("%Y-%m-%dT23:59:59Z")
         
-        # Inseriamo i nomi dei parametri di data supportati dallo Swagger
         params = {
-            "from": str_start,
-            "to": str_end,
-            "start": str_start,
-            "end": str_end,
-            "date_from": str_start,
-            "date_to": str_end,
-            "dt_from": str_start,
-            "dt_to": str_end,
+            "from": str_start, "to": str_end,
+            "start": str_start, "end": str_end,
+            "date_from": str_start, "date_to": str_end,
+            "dt_from": str_start, "dt_to": str_end,
             "sensor_id": sensor_id
         }
         
-        # Prova progressiva degli endpoint previsti dallo Swagger dell'API
         endpoints_to_try = [
             f"{BASE_URL}/stations/{station_id}/sensors/{sensor_id}/measures",
             f"{BASE_URL}/sensors/{sensor_id}/measures",
             f"{BASE_URL}/measures"
         ]
         
-        chunk_success = False
         for url in endpoints_to_try:
             try:
                 res = requests.get(url, params=params, headers=HEADERS, timeout=12)
@@ -101,10 +117,15 @@ def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
                     if isinstance(data, list):
                         measures_list = data
                     elif isinstance(data, dict):
-                        for key in ['measures', 'data', 'items']:
+                        for key in ['measures', 'data', 'items', 'values']:
                             if key in data and isinstance(data[key], list):
                                 measures_list = data[key]
                                 break
+                        if not measures_list:
+                            for val in data.values():
+                                if isinstance(val, list):
+                                    measures_list = val
+                                    break
                                 
                     if measures_list:
                         for m in measures_list:
@@ -113,8 +134,7 @@ def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
                                     "data_ora": m["dt"],
                                     "valore": m["value"]
                                 })
-                        chunk_success = True
-                        break # Esce dal ciclo se trova dati validi
+                        break # Esce dal ciclo se ha trovato i dati con questo endpoint
             except Exception:
                 continue
                 
@@ -124,7 +144,7 @@ def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
 
 # --- BARRA LATERALE CONTROLLO CACHE ---
 with st.sidebar:
-    st.header("Strumenti System")
+    st.header("Strumenti di Sistema")
     if st.button("🔄 Svuota Cache e Ricarica API"):
         st.cache_data.clear()
         st.session_state.selected_stations = []
@@ -134,7 +154,7 @@ with st.sidebar:
 try:
     stations_dict = fetch_stations()
 except Exception as err:
-    st.error(f"⚠️ **Errore nel recupero dati dalle API Protezione Civile FVG:**")
+    st.error("⚠️ **Errore nel recupero dati dalle API Protezione Civile FVG:**")
     st.info(str(err))
     st.warning("Prova a premere il pulsante '🔄 Svuota Cache e Ricarica API' nella barra laterale.")
     st.stop()
@@ -145,7 +165,6 @@ if "selected_stations" not in st.session_state:
 if "processed_tooltip" not in st.session_state:
     st.session_state.processed_tooltip = None
 
-# Sincronizzazione clic sulla mappa
 map_state = st.session_state.get("fvg_map")
 if map_state and map_state.get("last_object_clicked_tooltip"):
     current_click = map_state["last_object_clicked_tooltip"]
@@ -243,7 +262,7 @@ with col_controls:
             
             if not final_dataframe.empty:
                 st.success(f"Scaricati {len(final_dataframe)} record con successo!")
-                st.dataframe(final_dataframe.head(10))
+                st.dataframe(final_dataframe.head())
                 
                 csv = final_dataframe.to_csv(index=False).encode('utf-8')
                 st.download_button(
