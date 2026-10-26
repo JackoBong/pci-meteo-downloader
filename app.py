@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import folium
 from streamlit_folium import st_folium
 import pytz
+import math
 
 st.set_page_config(page_title="Download Dati Meteo FVG", layout="wide")
 
@@ -83,24 +84,31 @@ def fetch_sensors(station_id):
         pass
     return []
 
-def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
-    """Scarica le misure storiche allineando le date del frontend all'ora locale italiana."""
+def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date, pbar=None, text_element=None, st_name=""):
+    """Scarica le misure storiche a blocchi di 100 giorni con barra di progresso esatta."""
     all_data = []
     current_date = start_date
     local_tz = pytz.timezone("Europe/Rome")
     
+    # Calcoliamo i chunk necessari (100 giorni per chiamata)
+    chunk_days_limit = 99  # 99 + il giorno corrente = 100 giorni
+    total_days = (end_date - start_date).days + 1
+    total_chunks = math.ceil(total_days / (chunk_days_limit + 1))
+    current_chunk = 1
+    
     while current_date <= end_date:
-        chunk_end_date = min(current_date + timedelta(days=100), end_date)
+        chunk_end_date = min(current_date + timedelta(days=chunk_days_limit), end_date)
         
-        # Creiamo i limiti temporali locali (mezzanotte esatta e 23:59:59 in Italia)
+        # Aggiornamento testo interfaccia per il chunk corrente
+        if text_element is not None:
+            text_element.markdown(f"Scaricamento **{st_name}** (Sensore: {sensor_id}) - Blocco API **{current_chunk} di {total_chunks}**...")
+        
         local_start = local_tz.localize(datetime.combine(current_date, datetime.min.time()))
         local_end = local_tz.localize(datetime.combine(chunk_end_date, datetime.max.time()))
         
-        # Convertiamo in UTC per interrogare correttamente il database dell'API
         utc_start = local_start.astimezone(pytz.UTC)
         utc_end = local_end.astimezone(pytz.UTC)
         
-        # Formattazione per la chiamata
         str_start = utc_start.strftime("%Y-%m-%dT%H:%M:%SZ")
         str_end = utc_end.strftime("%Y-%m-%dT%H:%M:%SZ")
         
@@ -120,7 +128,7 @@ def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
         
         for url in endpoints_to_try:
             try:
-                res = requests.get(url, params=params, headers=HEADERS, timeout=12)
+                res = requests.get(url, params=params, headers=HEADERS, timeout=15)
                 if res.status_code == 200:
                     data = res.json()
                     measures_list = []
@@ -145,11 +153,17 @@ def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
                                     "data_ora": m["dt"],
                                     "valore": m["value"]
                                 })
-                        break
+                        break # Successo: passa al blocco successivo
             except Exception:
                 continue
-                
+        
+        # --- AVANZAMENTO BARRA AL COMPLETAMENTO DEL CHUNK ---
+        if pbar is not None:
+            progress_fraction = min(current_chunk / total_chunks, 1.0)
+            pbar.progress(progress_fraction)
+            
         current_date = chunk_end_date + timedelta(days=1)
+        current_chunk += 1
         
     return all_data
 
