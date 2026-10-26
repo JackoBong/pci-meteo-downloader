@@ -4,4 +4,3 @@ requests
 folium
 streamlit-folium
 pytz
-math
