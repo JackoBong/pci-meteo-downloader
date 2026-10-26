@@ -90,7 +90,7 @@ def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
     local_tz = pytz.timezone("Europe/Rome")
     
     while current_date <= end_date:
-        chunk_end_date = min(current_date + timedelta(days=365), end_date)
+        chunk_end_date = min(current_date + timedelta(days=100), end_date)
         
         # Creiamo i limiti temporali locali (mezzanotte esatta e 23:59:59 in Italia)
         local_start = local_tz.localize(datetime.combine(current_date, datetime.min.time()))
