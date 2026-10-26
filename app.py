@@ -262,6 +262,14 @@ with col_controls:
             
             if not final_dataframe.empty:
                 st.success(f"Scaricati {len(final_dataframe)} record con successo!")
+                
+                # Conversione dal fuso orario UTC all'ora locale Italiana
+                final_dataframe["data_ora"] = pd.to_datetime(final_dataframe["data_ora"])
+                final_dataframe["data_ora"] = final_dataframe["data_ora"].dt.tz_localize("UTC").dt.tz_convert("Europe/Rome")
+                
+                # Riformatta la data per rimuovere l'etichetta del fuso e avere testo pulito
+                final_dataframe["data_ora"] = final_dataframe["data_ora"].dt.strftime('%Y-%m-%d %H:%M:%S')
+                
                 st.dataframe(final_dataframe.head())
                 
                 csv = final_dataframe.to_csv(index=False).encode('utf-8')
