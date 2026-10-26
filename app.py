@@ -4,6 +4,7 @@ import requests
 from datetime import datetime, timedelta
 import folium
 from streamlit_folium import st_folium
+import pytz
 
 st.set_page_config(page_title="Download Dati Meteo FVG", layout="wide")
 
@@ -83,15 +84,25 @@ def fetch_sensors(station_id):
     return []
 
 def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
-    """Scarica le misure storiche ciclando sulle API."""
+    """Scarica le misure storiche allineando le date del frontend all'ora locale italiana."""
     all_data = []
-    current_start = start_date
+    current_date = start_date
+    local_tz = pytz.timezone("Europe/Rome")
     
-    while current_start <= end_date:
-        current_end = min(current_start + timedelta(days=6), end_date)
+    while current_date <= end_date:
+        chunk_end_date = min(current_date + timedelta(days=6), end_date)
         
-        str_start = current_start.strftime("%Y-%m-%dT00:00:00Z")
-        str_end = current_end.strftime("%Y-%m-%dT23:59:59Z")
+        # Creiamo i limiti temporali locali (mezzanotte esatta e 23:59:59 in Italia)
+        local_start = local_tz.localize(datetime.combine(current_date, datetime.min.time()))
+        local_end = local_tz.localize(datetime.combine(chunk_end_date, datetime.max.time()))
+        
+        # Convertiamo in UTC per interrogare correttamente il database dell'API
+        utc_start = local_start.astimezone(pytz.UTC)
+        utc_end = local_end.astimezone(pytz.UTC)
+        
+        # Formattazione per la chiamata
+        str_start = utc_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+        str_end = utc_end.strftime("%Y-%m-%dT%H:%M:%SZ")
         
         params = {
             "from": str_start, "to": str_end,
@@ -134,11 +145,11 @@ def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date):
                                     "data_ora": m["dt"],
                                     "valore": m["value"]
                                 })
-                        break # Esce dal ciclo se ha trovato i dati con questo endpoint
+                        break
             except Exception:
                 continue
                 
-        current_start = current_end + timedelta(days=1)
+        current_date = chunk_end_date + timedelta(days=1)
         
     return all_data
 
