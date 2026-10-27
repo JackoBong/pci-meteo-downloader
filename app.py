@@ -287,14 +287,14 @@ if map_state and map_state.get("last_object_clicked_tooltip"):
             show_sensor_popup(current_click, st_info.get("id"))
 
 # --- COSTRUZIONE MAPPA OTTIMIZZATA ---
-@st.cache_resource
+# (Nessun decoratore @st.cache_resource per evitare crash di rendering Jinja2)
 def crea_mappa_fluida(stazioni, filtro_sensori_tuple, _station_sensors_map_dict, cart_keys_tuple):
     m = folium.Map(location=[46.06, 13.23], zoom_start=9)
     for s_name, s_data in stazioni.items():
         st_id = s_data.get("id")
         mostra = True
         
-        # Se è attivo un filtro, verifichiamo che la stazione abbia TUTTI i sensori richiesti
+        # Filtro sensori
         if filtro_sensori_tuple and _station_sensors_map_dict:
             st_types = _station_sensors_map_dict.get(st_id, tuple())
             if not all(f in st_types for f in filtro_sensori_tuple):
@@ -303,13 +303,22 @@ def crea_mappa_fluida(stazioni, filtro_sensori_tuple, _station_sensors_map_dict,
         if mostra:
             lat = s_data.get("lat")
             lon = s_data.get("lon")
-            if lat and lon:
-                color = "red" if s_name in cart_keys_tuple else "blue"
-                folium.Marker(
-                    [lat, lon],
-                    tooltip=s_name,
-                    icon=folium.Icon(color=color, icon="cloud")
-                ).add_to(m)
+            
+            # Controllo rigoroso e conversione a Float per prevenire errori
+            if lat is not None and lon is not None:
+                try:
+                    lat_f = float(lat)
+                    lon_f = float(lon)
+                    color = "red" if s_name in cart_keys_tuple else "blue"
+                    
+                    folium.Marker(
+                        [lat_f, lon_f],
+                        tooltip=str(s_name),
+                        icon=folium.Icon(color=color, icon="cloud")
+                    ).add_to(m)
+                except ValueError:
+                    pass # Salta silenziosamente eventuali coordinate danneggiate o mancanti nell'API
+
     return m
 
 # --- CORPO DELL'APPLICAZIONE ---
