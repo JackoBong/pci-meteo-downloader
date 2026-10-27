@@ -6,6 +6,7 @@ import folium
 from streamlit_folium import st_folium
 import pytz
 import math
+import concurrent.futures
 
 st.set_page_config(page_title="Download Dati Meteo FVG", layout="wide")
 
@@ -76,39 +77,47 @@ def fetch_sensors(station_id):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_global_sensor_types():
-    """Scansiona tutti i sensori globalmente per popolare il filtro della mappa."""
-    try:
-        res = requests.get(f"{BASE_URL}/sensors", headers=HEADERS, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            s_list = []
-            if isinstance(data, list): s_list = data
-            elif isinstance(data, dict):
-                for k in ['data', 'items', 'sensors', 'result', 'features']:
-                    if k in data and isinstance(data[k], list):
-                        s_list = data[k]
-                        break
-            
-            temp_map = {}
-            unique_types = set()
-            
-            for s in s_list:
-                if isinstance(s, dict):
-                    st_id = s.get("station_id")
-                    s_type = s.get("quantity") or s.get("name")
-                    if st_id and s_type:
-                        s_type_str = str(s_type).strip().capitalize()
-                        if st_id not in temp_map:
-                            temp_map[st_id] = set()
-                        temp_map[st_id].add(s_type_str)
-                        unique_types.add(s_type_str)
-            
-            # Converte in tuple in modo che Streamlit possa conservare in cache senza problemi
-            final_map = {k: tuple(v) for k, v in temp_map.items()}
-            return final_map, sorted(list(unique_types))
-    except Exception:
-        pass
-    return {}, []
+    """Scansiona i sensori di TUTTE le stazioni in parallelo (Multi-threading)."""
+    temp_map = {}
+    unique_types = set()
+    
+    stations = fetch_stations()
+    
+    def fetch_for_station(st_id):
+        # Funzione interna per il thread
+        try:
+            res = requests.get(f"{BASE_URL}/stations/{st_id}/sensors", headers=HEADERS, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, list): return st_id, data
+                if isinstance(data, dict):
+                    for k in ['data', 'items', 'sensors']:
+                        if k in data and isinstance(data[k], list): return st_id, data[k]
+                    for val in data.values():
+                        if isinstance(val, list): return st_id, val
+        except Exception:
+            pass
+        return st_id, []
+
+    # Eseguiamo 30 chiamate API in contemporanea per azzerare i tempi di attesa
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+        futures = [executor.submit(fetch_for_station, s_data["id"]) for s_data in stations.values()]
+        
+        for future in concurrent.futures.as_completed(futures):
+            st_id, s_list = future.result()
+            if s_list:
+                for s in s_list:
+                    if isinstance(s, dict):
+                        s_type = s.get("quantity") or s.get("name")
+                        if s_type:
+                            s_type_str = str(s_type).strip().capitalize()
+                            if st_id not in temp_map:
+                                temp_map[st_id] = set()
+                            temp_map[st_id].add(s_type_str)
+                            unique_types.add(s_type_str)
+                            
+    final_map = {k: tuple(v) for k, v in temp_map.items()}
+    return final_map, sorted(list(unique_types))
 
 def fetch_data_in_chunks(station_id, sensor_id, start_date, end_date, pbar=None, text_element=None, st_name=""):
     """Scarica i dati a blocchi ottimizzati da 100 giorni (Max API limit 10000)."""
@@ -240,7 +249,8 @@ def show_sensor_popup(station_name, station_id):
 # --- CARICAMENTO ANAGRAFICA INIZIALE ---
 try:
     stations_dict = fetch_stations()
-    station_sensors_map, all_sensor_types = get_global_sensor_types()
+    with st.spinner("⏳ Mappatura della rete sensori in corso (potrebbe richiedere qualche secondo la prima volta)..."):
+        station_sensors_map, all_sensor_types = get_global_sensor_types()
 except Exception as err:
     st.error("⚠️ **Errore nel recupero dati dalle API Protezione Civile FVG:**")
     st.info(str(err))
@@ -256,7 +266,7 @@ with st.sidebar:
             help="Se selezioni più sensori, la mappa mostrerà solo le stazioni che li possiedono TUTTI."
         )
     else:
-        st.warning("Filtro globale mappa non disponibile a causa di limitazioni dell'API.")
+        st.warning("Impossibile caricare il catalogo sensori.")
         filtro_sensori = []
         
     st.divider()
@@ -270,7 +280,6 @@ with st.sidebar:
     st.header("Strumenti di Sistema")
     if st.button("🔄 Svuota Cache e Ricarica API"):
         st.cache_data.clear()
-        st.cache_resource.clear()
         st.session_state.selected_sensors_per_station = {}
         st.session_state.processed_tooltip = None
         st.rerun()
@@ -279,7 +288,6 @@ with st.sidebar:
 map_state = st.session_state.get("fvg_map")
 if map_state and map_state.get("last_object_clicked_tooltip"):
     current_click = map_state["last_object_clicked_tooltip"]
-    # Se il clic è nuovo, registralo e lancia il popup
     if current_click != st.session_state.processed_tooltip:
         st.session_state.processed_tooltip = current_click
         st_info = stations_dict.get(current_click)
@@ -287,14 +295,12 @@ if map_state and map_state.get("last_object_clicked_tooltip"):
             show_sensor_popup(current_click, st_info.get("id"))
 
 # --- COSTRUZIONE MAPPA OTTIMIZZATA ---
-# (Nessun decoratore @st.cache_resource per evitare crash di rendering Jinja2)
 def crea_mappa_fluida(stazioni, filtro_sensori_tuple, _station_sensors_map_dict, cart_keys_tuple):
     m = folium.Map(location=[46.06, 13.23], zoom_start=9)
     for s_name, s_data in stazioni.items():
         st_id = s_data.get("id")
         mostra = True
         
-        # Filtro sensori
         if filtro_sensori_tuple and _station_sensors_map_dict:
             st_types = _station_sensors_map_dict.get(st_id, tuple())
             if not all(f in st_types for f in filtro_sensori_tuple):
@@ -303,22 +309,18 @@ def crea_mappa_fluida(stazioni, filtro_sensori_tuple, _station_sensors_map_dict,
         if mostra:
             lat = s_data.get("lat")
             lon = s_data.get("lon")
-            
-            # Controllo rigoroso e conversione a Float per prevenire errori
             if lat is not None and lon is not None:
                 try:
                     lat_f = float(lat)
                     lon_f = float(lon)
                     color = "red" if s_name in cart_keys_tuple else "blue"
-                    
                     folium.Marker(
                         [lat_f, lon_f],
                         tooltip=str(s_name),
                         icon=folium.Icon(color=color, icon="cloud")
                     ).add_to(m)
                 except ValueError:
-                    pass # Salta silenziosamente eventuali coordinate danneggiate o mancanti nell'API
-
+                    pass
     return m
 
 # --- CORPO DELL'APPLICAZIONE ---
@@ -333,10 +335,10 @@ with col_controls:
         st.info("👈 Clicca su una stazione sulla mappa per scegliere i sensori da scaricare.")
     else:
         for st_name, info in list(st.session_state.selected_sensors_per_station.items()):
-            with st.expander(f"✅ {st_name} ({len(info['sensor_ids'])} sensori selezionati)", expanded=False):
+            with st.expander(f"✅ {st_name} ({len(info['sensor_ids'])} sensori)", expanded=False):
                 st.write(f"- **ID Stazione:** {info['station_id']}")
                 st.write(f"- **ID Sensori:** {', '.join(map(str, info['sensor_ids']))}")
-                if st.button("✏️ Modifica Sensori", key=f"mod_{st_name}", use_container_width=True):
+                if st.button("✏️ Modifica", key=f"mod_{st_name}", use_container_width=True):
                     show_sensor_popup(st_name, info["station_id"])
                     
     st.divider()
