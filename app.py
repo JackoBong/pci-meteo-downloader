@@ -375,9 +375,17 @@ with col_controls:
                     )
                     
                     if raw_data:
+                        # --- RECUPERO METADATI SENSORE DALLA CACHE LOCALE ---
+                        sensors_list = fetch_sensors(st_id)
+                        s_meta = next((s for s in sensors_list if isinstance(s, dict) and s.get("id") == s_id), {})
+                        s_unit = s_meta.get("unit", "")
+                        s_quantity = s_meta.get("quantity") or s_meta.get("name") or "Sensore"
+                        
                         temp_df = pd.DataFrame(raw_data)
                         temp_df.insert(0, "stazione", st_name)
                         temp_df.insert(1, "id_sensore", s_id)
+                        temp_df.insert(2, "grandezza", s_quantity)
+                        temp_df.insert(3, "unita_misura", s_unit)
                         final_dataframe = pd.concat([final_dataframe, temp_df], ignore_index=True)
                         
                     processed_sensors += 1
@@ -402,14 +410,11 @@ with col_controls:
                 
                 parti_sensori = []
                 for nome_staz, info in st.session_state.selected_sensors_per_station.items():
-                    # Rimuoviamo spazi e caratteri speciali per avere un nome file pulito
                     nome_pulito = "".join(c for c in nome_staz if c.isalnum())
                     for s_id in info["sensor_ids"]:
                         parti_sensori.append(f"{nome_pulito}{s_id}")
                 
                 stringa_sensori = "_".join(parti_sensori)
-                
-                # Sicurezza: limitiamo la lunghezza per non far crashare il file system del PC
                 if len(stringa_sensori) > 150:
                     stringa_sensori = stringa_sensori[:140] + "_ecc"
                     
@@ -425,7 +430,6 @@ with col_controls:
                 )
             else:
                 st.warning("L'API non ha restituito dati per i sensori e le date selezionate.")
-
 with col_map:
     filtro_tuple = tuple(filtro_sensori)
     cart_tuple = tuple(st.session_state.selected_sensors_per_station.keys())
