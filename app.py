@@ -197,7 +197,7 @@ def crea_mappa_fluida(stazioni):
             folium.Marker(
                 [lat, lon],
                 tooltip=s_name,
-                icon=folium.Icon(color="blue", icon="cloud")
+                icon=folium.Icon(color="blue", icon="sun")
             ).add_to(m)
     return m
 
