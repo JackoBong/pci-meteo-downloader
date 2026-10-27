@@ -396,11 +396,30 @@ with col_controls:
                 
                 st.dataframe(final_dataframe.head(10))
                 
+                # --- GENERAZIONE NOME FILE DINAMICO ---
+                start_str = start_date.strftime('%y%m%d')
+                end_str = end_date.strftime('%y%m%d')
+                
+                parti_sensori = []
+                for nome_staz, info in st.session_state.selected_sensors_per_station.items():
+                    # Rimuoviamo spazi e caratteri speciali per avere un nome file pulito
+                    nome_pulito = "".join(c for c in nome_staz if c.isalnum())
+                    for s_id in info["sensor_ids"]:
+                        parti_sensori.append(f"{nome_pulito}{s_id}")
+                
+                stringa_sensori = "_".join(parti_sensori)
+                
+                # Sicurezza: limitiamo la lunghezza per non far crashare il file system del PC
+                if len(stringa_sensori) > 150:
+                    stringa_sensori = stringa_sensori[:140] + "_ecc"
+                    
+                nome_file_dinamico = f"dati_meteo_fvg_{start_str}_{end_str}_{stringa_sensori}.csv"
+                
                 csv = final_dataframe.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="📥 Scarica il File CSV",
                     data=csv,
-                    file_name=f"dati_meteo_fvg_{start_date}_{end_date}.csv",
+                    file_name=nome_file_dinamico,
                     mime="text/csv",
                     use_container_width=True
                 )
