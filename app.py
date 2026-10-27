@@ -184,6 +184,25 @@ except Exception as err:
     st.warning("Prova a premere il pulsante '🔄 Svuota Cache e Ricarica API' nella barra laterale.")
     st.stop()
 
+
+
+
+@st.cache_resource
+def crea_mappa_fluida(stazioni):
+    m = folium.Map(location=[46.06, 13.23], zoom_start=9)
+    for s_name, s_data in stazioni.items():
+        lat = s_data.get("lat")
+        lon = s_data.get("lon")
+        if lat and lon:
+            folium.Marker(
+                [lat, lon],
+                tooltip=s_name,
+                icon=folium.Icon(color="blue", icon="cloud")
+            ).add_to(m)
+    return m
+
+
+
 # --- INIZIALIZZAZIONE STATO INTERFACCIA ---
 if "selected_stations" not in st.session_state:
     st.session_state.selected_stations = []
@@ -309,17 +328,5 @@ with col_controls:
                 st.warning("L'API non ha restituito dati per i sensori e le date selezionate.")
 
 with col_map:
-    m = folium.Map(location=[46.06, 13.23], zoom_start=9)
-    for s_name, s_data in stations_dict.items():
-        lat = s_data.get("lat")
-        lon = s_data.get("lon")
-        
-        if lat and lon:
-            color = "red" if s_name in st.session_state.selected_stations else "blue"
-            folium.Marker(
-                [lat, lon],
-                tooltip=s_name,
-                icon=folium.Icon(color=color, icon="cloud")
-            ).add_to(m)
-
-    st_folium(m, width=800, height=600, key="fvg_map", returned_objects=["last_object_clicked_tooltip"])
+    mappa_ottimizzata = crea_mappa_fluida(stations_dict)
+    st_folium(mappa_ottimizzata, width=800, height=600, key="fvg_map", returned_objects=["last_object_clicked_tooltip"])
